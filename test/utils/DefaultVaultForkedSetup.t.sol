@@ -8,8 +8,18 @@ import {IWETH9} from "@synapseprotocol/sol-lib/contracts/universal/interfaces/IW
 
 import {SafeERC20} from "@synapseprotocol/sol-lib/contracts/solc8/erc20/SafeERC20.sol";
 
+import {Strings} from "@openzeppelin/contracts-solc8/utils/Strings.sol";
+
 abstract contract DefaultVaultForkedSetup is DefaultVaultTest {
     using SafeERC20 for IERC20;
+
+    struct AdapterData {
+        string contractName;
+        string adapterName;
+        bytes constructorParams;
+        string[] tokens;
+        bool isUnderquoting;
+    }
 
     mapping(address => uint256) public minTokenAmount;
     mapping(address => uint256) public maxTokenAmount;
@@ -22,7 +32,7 @@ abstract contract DefaultVaultForkedSetup is DefaultVaultTest {
     address[] public routeTokens;
 
     address[] public adapters;
-    mapping(address => bool) public canUnderquote;
+    mapping(address => bool) public isUnderquoting;
     mapping(address => address[]) public adapterTestTokens;
     mapping(string => address) public adaptersByName;
 
@@ -146,37 +156,27 @@ abstract contract DefaultVaultForkedSetup is DefaultVaultTest {
         vm.stopPrank();
     }
 
-    function _deployAdapter(
-        string memory contractName,
-        string memory name,
-        bytes memory args,
-        bytes memory tokens
-    ) internal {
-        _deployAdapter(contractName, name, args, tokens, false);
-    }
-
-    function _deployAdapter(
-        string memory contractName,
-        string memory name,
-        bytes memory args,
-        bytes memory tokens,
-        bool _canUnderquote
-    ) internal {
+    function _deployAdapter(AdapterData memory data) internal {
         address _adapter = deployCode(
-            string(abi.encodePacked("./artifacts/", contractName, ".sol/", contractName, ".json")),
-            args
+            string(abi.encodePacked("./artifacts/", data.contractName, ".sol/", data.contractName, ".json")),
+            data.constructorParams
         );
+        require(_adapter != address(0), "Failed to deploy");
         adapters.push(_adapter);
-        if (_canUnderquote) {
-            canUnderquote[_adapter] = true;
+        if (data.isUnderquoting) {
+            isUnderquoting[_adapter] = true;
         }
-        vm.label(_adapter, name);
-        adapterTestTokens[_adapter] = _extractTokens(tokens);
-        adaptersByName[name] = _adapter;
+        vm.label(_adapter, data.adapterName);
+        adaptersByName[data.adapterName] = _adapter;
+        adapterTestTokens[_adapter] = _extractTokens(data.tokens);
     }
 
     function _extractTokens(bytes memory encodedTokens) internal view returns (address[] memory tokens) {
         string[] memory names = abi.decode(encodedTokens, (string[]));
+        tokens = _extractTokens(names);
+    }
+
+    function _extractTokens(string[] memory names) internal view returns (address[] memory tokens) {
         tokens = new address[](names.length);
         for (uint256 i = 0; i < names.length; ++i) {
             tokens[i] = tokensByName[names[i]];
@@ -185,5 +185,25 @@ abstract contract DefaultVaultForkedSetup is DefaultVaultTest {
 
     function _getTokenDstAddress(address token, uint256 chainId) internal view returns (address dstAddress) {
         dstAddress = utils.bytes32ToAddress(keccak256(abi.encode(token, chainId)));
+    }
+
+    function _deployAdapters() internal {
+        string[] memory inputs = new string[](6);
+        inputs[0] = "python3";
+        inputs[1] = "scripts/adapters.py";
+        inputs[2] = "--chain_id";
+        inputs[3] = Strings.toString(block.chainid);
+        inputs[4] = "--fn";
+        inputs[5] = "test/adapters.json";
+        bytes memory res = vm.ffi(inputs);
+
+        (, bytes[] memory rawData) = abi.decode(res, (uint256, bytes[]));
+
+        for (uint256 i = 0; i < rawData.length; ++i) {
+            AdapterData memory data;
+            (data.contractName, data.adapterName, data.constructorParams, data.tokens, data.isUnderquoting) = abi
+            .decode(rawData[i], (string, string, bytes, string[], bool));
+            _deployAdapter(data);
+        }
     }
 }
